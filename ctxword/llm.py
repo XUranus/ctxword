@@ -22,7 +22,7 @@ Return ONLY valid JSON, no markdown, no code blocks. Ensure the JSON is complete
 
 
 class LLMResponse(BaseModel):
-    query: str
+    query: str = ""
     normalized_query: str = ""
     input_type: str = "unknown"
     lemma: str = ""
@@ -317,7 +317,15 @@ async def explain(
                 f"  Parsed: {json.dumps(parsed, ensure_ascii=False)[:300]}"
             )
 
-        return validated.model_dump()
+        result = validated.model_dump()
+        # Backfill fields the LLM may have omitted
+        if not result.get("query"):
+            result["query"] = query
+        if not result.get("normalized_query"):
+            result["normalized_query"] = query.lower()
+        if not result.get("input_type") or result["input_type"] == "unknown":
+            result["input_type"] = input_type
+        return result
 
     # Should not reach here (last attempt raises in _parse_json_content)
     raise LLMError(
