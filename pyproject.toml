@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ctxword"
+version = "0.1.0"
+description = "Context-aware English vocabulary learning tool for programmers"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+readme = "README.md"
+dependencies = [
+    "typer>=0.9",
+    "rich>=13.0",
+    "pydantic>=2.0",
+    "httpx>=0.25",
+    "platformdirs>=3.0",
+    "rapidfuzz>=3.0",
+    "tomli>=2.0; python_version < '3.11'",
+    "pyperclip>=1.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.scripts]
+ctxword = "ctxword.cli:main_entry"
+t = "ctxword.cli:main_entry"
+
+[tool.setuptools.packages.find]
+include = ["ctxword*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
