@@ -82,6 +82,12 @@ def _get_prompt_version(input_type: str) -> str:
     return PROMPT_VERSION_EXPLAIN_WORD
 
 
+def _mask_key(key: str) -> str:
+    if len(key) <= 8:
+        return "*" * len(key)
+    return key[:4] + "****" + key[-4:]
+
+
 def _make_cache_key(query: str, context_hash: str | None, model: str, prompt_version: str) -> str:
     raw = f"{query}|{context_hash or ''}|{model}|{prompt_version}"
     return hashlib.sha256(raw.encode()).hexdigest()
@@ -124,6 +130,8 @@ async def explain(
 
     url = f"{config.llm.base_url.rstrip('/')}/chat/completions"
 
+    masked_key = _mask_key(api_key) if api_key else None
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             response = await client.post(
@@ -136,9 +144,35 @@ async def explain(
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            raise LLMError(f"LLM API error: {e.response.status_code} {e.response.text[:200]}")
+            detail = e.response.text[:500]
+            raise LLMError(
+                f"LLM API returned HTTP {e.response.status_code}\n"
+                f"  URL: {url}\n"
+                f"  Model: {config.llm.model}\n"
+                f"  Response: {detail}"
+            )
+        except httpx.ConnectError as e:
+            raise LLMError(
+                f"Cannot connect to LLM API — connection refused or unreachable.\n"
+                f"  URL: {url}\n"
+                f"  Check that base_url is correct in ~/.config/ctxword/config.toml\n"
+                f"  Detail: {e!r}"
+            )
+        except httpx.TimeoutException as e:
+            raise LLMError(
+                f"LLM API request timed out after 30s.\n"
+                f"  URL: {url}\n"
+                f"  Model: {config.llm.model}\n"
+                f"  Detail: {e!r}"
+            )
         except httpx.RequestError as e:
-            raise LLMError(f"LLM API request failed: {e}")
+            raise LLMError(
+                f"LLM API request failed.\n"
+                f"  URL: {url}\n"
+                f"  Model: {config.llm.model}\n"
+                f"  Error type: {type(e).__name__}\n"
+                f"  Detail: {e!r}"
+            )
 
     data = response.json()
     content = data["choices"][0]["message"]["content"]
