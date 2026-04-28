@@ -145,12 +145,19 @@ async def explain(
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
             detail = e.response.text[:500]
-            raise LLMError(
+            msg = (
                 f"LLM API returned HTTP {e.response.status_code}\n"
                 f"  URL: {url}\n"
                 f"  Model: {config.llm.model}\n"
                 f"  Response: {detail}"
             )
+            if e.response.status_code == 404:
+                msg += "\n  Hint: the API endpoint was not found. Check that base_url includes /v1 if required."
+            elif e.response.status_code == 405:
+                msg += "\n  Hint: this URL doesn't accept API requests — are you using the web UI address instead of the API endpoint?"
+            elif e.response.status_code in (401, 403):
+                msg += f"\n  Hint: check that {config.llm.api_key_env} is set correctly."
+            raise LLMError(msg)
         except httpx.ConnectError as e:
             raise LLMError(
                 f"Cannot connect to LLM API — connection refused or unreachable.\n"
