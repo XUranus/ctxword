@@ -27,7 +27,7 @@ class LLMConfig:
     api_key_env: str = "CTXWORD_API_KEY"
     model: str = "gpt-3.5-turbo"
     temperature: float = 0.2
-    max_tokens: int = 1200
+    max_tokens: int = 2048
     cache: bool = True
 
 

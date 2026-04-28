@@ -16,10 +16,9 @@ PROMPT_VERSION_EXPLAIN_PHRASE = "explain_phrase_v1"
 PROMPT_VERSION_EXPLAIN_IDENTIFIER = "explain_identifier_v1"
 
 SYSTEM_PROMPT = """You are an English learning assistant for Chinese-speaking programmers.
-Your job is to explain English words, phrases, and code identifiers in technical context.
-Do not only translate. Explain the actual meaning in the given context.
-Prefer concise, accurate, programmer-friendly explanations.
-Return valid JSON only, without markdown formatting or code blocks."""
+Explain English words, phrases, and code identifiers in technical context.
+Be concise and programmer-friendly. Keep all field values brief (1-3 sentences max).
+Return ONLY valid JSON, no markdown, no code blocks. Ensure the JSON is complete."""
 
 
 class LLMResponse(BaseModel):
@@ -56,19 +55,16 @@ def _build_user_prompt(
     parts.extend([
         "User language: Chinese",
         "",
-        "Please analyze the target item and return JSON with:",
-        "- normalized_query: the base/normalized form",
-        "- lemma: the dictionary form of the word",
-        "- part_of_speech: list of parts of speech",
-        "- meaning_zh: Chinese meaning",
-        "- meaning_en: English meaning",
-        "- context_explanation: explanation specific to the given context (if any)",
-        "- technical_domain: list of technical domains if applicable",
-        "- technical_note: programming-specific notes if applicable",
-        "- collocations: common word combinations",
-        "- examples: list of dicts with en and zh keys",
-        "- common_mistakes: list of common errors to avoid",
-        "- cards: list of dicts with type, front, back, tags fields (max 3 cards)",
+        "Return a COMPLETE JSON object with these fields (keep values short):",
+        "- normalized_query, lemma, part_of_speech (list)",
+        "- meaning_zh, meaning_en (1 short sentence each)",
+        "- context_explanation, technical_domain (list), technical_note",
+        "- collocations (list of short phrases)",
+        "- examples (list of {en, zh}, max 2)",
+        "- common_mistakes (list, max 2)",
+        "- cards (list of {type, front, back, tags}, max 3)",
+        "",
+        "IMPORTANT: Ensure your JSON response is complete and properly closed.",
     ])
 
     return "\n".join(parts)
@@ -93,45 +89,13 @@ def _make_cache_key(query: str, context_hash: str | None, model: str, prompt_ver
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-async def explain(
-    query: str,
-    input_type: str,
+async def _call_api(
+    url: str,
+    api_key: str,
+    payload: dict,
     config: Config,
-    context: str | None = None,
-    context_hash: str | None = None,
-    lemma: str | None = None,
-    api_key: str | None = None,
-) -> dict[str, Any]:
-    """Call the LLM to explain a word/phrase/identifier.
-
-    Returns a validated dict matching the LLMResponse schema.
-    """
-    if not config.llm.enabled:
-        raise LLMError("LLM is disabled in config. Use --ai to override.")
-
-    if api_key is None:
-        raise LLMError(
-            f"API key not found. Set the {config.llm.api_key_env} environment variable "
-            f"or configure llm.api_key_env in {config.llm.api_key_env}."
-        )
-
-    prompt_version = _get_prompt_version(input_type)
-    user_prompt = _build_user_prompt(query, input_type, context, lemma)
-
-    payload = {
-        "model": config.llm.model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": config.llm.temperature,
-        "max_tokens": config.llm.max_tokens,
-    }
-
-    url = f"{config.llm.base_url.rstrip('/')}/chat/completions"
-
-    masked_key = _mask_key(api_key) if api_key else None
-
+) -> tuple[str, bool]:
+    """Make a single API call. Returns (content, was_truncated)."""
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             response = await client.post(
@@ -183,28 +147,183 @@ async def explain(
 
     data = response.json()
     content = data["choices"][0]["message"]["content"]
+    finish_reason = data["choices"][0].get("finish_reason", "stop")
+    return content, finish_reason == "length"
 
-    # Try to parse JSON from content (strip potential markdown code blocks)
+
+def _strip_markdown(content: str) -> str:
+    """Strip markdown code block wrappers from LLM output."""
     content = content.strip()
     if content.startswith("```json"):
         content = content[7:]
-    if content.startswith("```"):
+    elif content.startswith("```"):
         content = content[3:]
     if content.endswith("```"):
         content = content[:-3]
-    content = content.strip()
+    return content.strip()
 
+
+def _recover_truncated_json(content: str) -> str | None:
+    """Try to salvage truncated JSON by closing unclosed structures.
+
+    Returns the repaired JSON string, or None if recovery is not possible.
+    """
+    # Scan to find unclosed structures
+    stack: list[str] = []
+    in_string = False
+    escape_next = False
+
+    for ch in content:
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\":
+            escape_next = True
+            continue
+        if ch == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in "{[":
+            stack.append(ch)
+        elif ch == "}":
+            if stack and stack[-1] == "{":
+                stack.pop()
+        elif ch == "]":
+            if stack and stack[-1] == "[":
+                stack.pop()
+
+    # Check if there's anything to recover
+    if not in_string and not stack:
+        return None  # content seems complete, nothing to repair
+
+    # Build the repaired JSON
+    repaired = content
+
+    # Close any unclosed string
+    if in_string:
+        repaired += '"'
+
+    # Close any unclosed brackets/braces in reverse order
+    while stack:
+        opener = stack.pop()
+        repaired += "}" if opener == "{" else "]"
+
+    # If we barely have anything useful, give up
+    if len(repaired) < 10 or "{" not in repaired:
+        return None
+
+    return repaired
+
+
+def _parse_json_content(content: str) -> dict:
+    """Parse JSON from LLM content, with recovery for truncated responses.
+
+    Returns parsed dict. Raises LLMError with details on failure.
+    """
+    content = _strip_markdown(content)
+
+    parse_errors: list[str] = []
+
+    # Attempt 1: direct parse (strict=False accepts control chars in strings)
     try:
-        parsed = json.loads(content)
+        return json.loads(content, strict=False)
     except json.JSONDecodeError as e:
-        raise LLMError(f"Failed to parse LLM response as JSON: {e}\nRaw: {content[:500]}")
+        parse_errors.append(f"direct parse: {e}")
 
-    try:
-        validated = LLMResponse.model_validate(parsed)
-    except ValidationError as e:
-        raise LLMError(f"LLM response missing required fields: {e}")
+    # Attempt 2: try recovery of truncated JSON
+    recovered = _recover_truncated_json(content)
+    if recovered:
+        try:
+            return json.loads(recovered, strict=False)
+        except json.JSONDecodeError as e:
+            parse_errors.append(f"recovery parse: {e}")
 
-    return validated.model_dump()
+    raise LLMError(
+        "Failed to parse LLM response as JSON.\n"
+        f"  Errors: {'; '.join(parse_errors)}\n"
+        f"  Raw (first 300 chars): {content[:300]}"
+    )
+
+
+async def explain(
+    query: str,
+    input_type: str,
+    config: Config,
+    context: str | None = None,
+    context_hash: str | None = None,
+    lemma: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Call the LLM to explain a word/phrase/identifier, with retry on truncation.
+
+    Returns a validated dict matching the LLMResponse schema.
+    """
+    if not config.llm.enabled:
+        raise LLMError("LLM is disabled in config. Use --ai to override.")
+
+    if api_key is None:
+        raise LLMError(
+            f"API key not found. Set the {config.llm.api_key_env} environment variable."
+        )
+
+    prompt_version = _get_prompt_version(input_type)
+    user_prompt = _build_user_prompt(query, input_type, context, lemma)
+
+    url = f"{config.llm.base_url.rstrip('/')}/chat/completions"
+    max_tokens = config.llm.max_tokens
+
+    last_content = ""
+    for attempt in range(3):
+        if attempt > 0:
+            # Boost token limit on retry
+            max_tokens = int(max_tokens * 1.5)
+
+        payload = {
+            "model": config.llm.model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": config.llm.temperature,
+            "max_tokens": max_tokens,
+        }
+
+        content, was_truncated = await _call_api(url, api_key, payload, config)
+        last_content = content
+
+        # Check finish_reason — if truncated by token limit, definitely retry
+        if was_truncated and attempt < 2:
+            continue
+
+        # Try to parse
+        try:
+            parsed = _parse_json_content(content)
+        except LLMError:
+            if attempt < 2:
+                continue
+            raise
+
+        # Validate against schema
+        try:
+            validated = LLMResponse.model_validate(parsed)
+        except ValidationError as e:
+            if attempt < 2:
+                continue
+            raise LLMError(
+                f"LLM response missing required fields after {attempt + 1} attempts.\n"
+                f"  Validation error: {e}\n"
+                f"  Parsed: {json.dumps(parsed, ensure_ascii=False)[:300]}"
+            )
+
+        return validated.model_dump()
+
+    # Should not reach here (last attempt raises in _parse_json_content)
+    raise LLMError(
+        "Failed to get a valid LLM response after 3 attempts.\n"
+        f"  Last raw response (first 300 chars): {last_content[:300]}"
+    )
 
 
 def check_cache(
