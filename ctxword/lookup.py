@@ -31,7 +31,6 @@ async def lookup(
     force: bool = False,
     no_save: bool = False,
     no_ai: bool = False,
-    use_ai: bool = False,
     is_identifier: bool = False,
 ) -> dict:
     """Perform a full lookup of a word/phrase/identifier.
@@ -79,25 +78,15 @@ async def lookup(
 
     context_hash = _hash_context(context)
 
-    # Step 6: LLM explanation
+    # Step 6: LLM explanation (default: on, use --no-ai to disable)
     llm_response = None
     llm_used = False
 
-    should_use_llm = (
-        (use_ai or context or input_type in (InputType.PHRASE, InputType.CODE_IDENTIFIER))
-        and not no_ai
-        and (use_ai or config.llm.enabled)  # --ai bypasses config enabled check
-    )
+    should_use_llm = not no_ai and config.llm.enabled
 
     if should_use_llm:
         api_key = get_api_key(config)
-        if not api_key:
-            if use_ai:
-                raise LookupError(
-                    f"API key not found. Set the {config.llm.api_key_env} environment variable."
-                )
-            # Fall through to local dict silently if --ai wasn't explicit
-        else:
+        if api_key:
             prompt_version = llm._get_prompt_version(str(input_type))
 
             # Check cache

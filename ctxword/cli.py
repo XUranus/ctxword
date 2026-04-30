@@ -61,13 +61,12 @@ def lookup(
     full: bool = typer.Option(False, "--full", help="Show full/detailed output"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
     no_save: bool = typer.Option(False, "--no-save", help="Do not save this lookup"),
-    no_ai: bool = typer.Option(False, "--no-ai", help="Disable AI (LLM) processing"),
-    ai: bool = typer.Option(False, "--ai", help="Force AI (LLM) processing"),
+    no_ai: bool = typer.Option(False, "--no-ai", help="Disable LLM processing (use local dictionary only)"),
     identifier: bool = typer.Option(False, "--identifier", help="Treat query as a code identifier"),
     tags: Optional[str] = typer.Option(None, "--tags", help="Tags for the lookup (comma-separated)"),
     source: Optional[str] = typer.Option(None, "--source", help="Source of the query"),
 ):
-    """Look up a word, phrase, or code identifier with contextual explanation."""
+    """Look up a word, phrase, or code identifier with LLM-powered explanation."""
     _do_lookup(
         query=query,
         config=get_config(),
@@ -78,7 +77,6 @@ def lookup(
         json_output=json_output,
         no_save=no_save,
         no_ai=no_ai,
-        use_ai=ai,
         is_identifier=identifier,
     )
 
@@ -93,7 +91,6 @@ def _do_lookup(
     json_output: bool = False,
     no_save: bool = False,
     no_ai: bool = False,
-    use_ai: bool = False,
     is_identifier: bool = False,
 ):
     try:
@@ -105,7 +102,6 @@ def _do_lookup(
             force=force,
             no_save=no_save,
             no_ai=no_ai,
-            use_ai=use_ai,
             is_identifier=is_identifier,
         ))
     except CtxwordError as e:
