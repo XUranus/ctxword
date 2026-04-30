@@ -1,31 +1,76 @@
 """CLI entry point for ctxword - context-aware English vocabulary learning tool."""
 
 import asyncio
+import random
 import sys
-import traceback
+import threading
+import time
 from typing import Optional
 
 import typer
 
 from .logging_config import init_logging, get_logger
-
-from . import classify as classify_mod
 from .config import load_config, Config
 from .db import get_connection, init_db
 from .errors import CtxwordError
-from .lookup import lookup as do_lookup, get_history, get_lookup_detail
-from .render import (
-    render_lookup,
-    render_lookup_json,
-    render_typo_warning,
-    render_history,
-    render_review_card,
-    render_review_answer,
-    render_stats,
-    console,
-)
-from .review import get_due_cards, rate_card, get_stats
-from .anki import export_tsv, export_csv
+from .render import console
+
+# Spinner animation frame sets — one chosen randomly per lookup
+_SPINNER_SETS = [
+    ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],  # braille dots
+    ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"],            # braille spin
+    ["|", "/", "-", "\\"],                               # line
+    ["▁", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃"],  # bar bounce
+    ["←", "↖", "↑", "↗", "→", "↘", "↓", "↙"],            # arrow
+    [".", "o", "O", "o"],                                # pulse
+    ["◐", "◓", "◑", "◒"],                                 # circle half
+    ["◴", "◷", "◶", "◵"],                                 # circle quad
+    ["▖", "▘", "▝", "▗"],                                 # block quad
+]
+
+
+class ThinkingSpinner:
+    """A spinner showing model name, thinking status, and elapsed time."""
+
+    def __init__(self, model: str):
+        self.model = model
+        self._frames = random.choice(_SPINNER_SETS)
+        self._stop = threading.Event()
+        self._start_time = 0.0
+
+    def __enter__(self):
+        from rich.live import Live
+        from rich.text import Text
+
+        self._Text = Text
+        self._start_time = time.time()
+        self._live = Live(
+            self._render(), console=console, refresh_per_second=12, transient=True
+        )
+        self._live.start()
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._update_loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *args):
+        self._stop.set()
+        self._thread.join(timeout=0.5)
+        self._live.stop()
+
+    def _render(self):
+        elapsed = time.time() - self._start_time
+        i = int(elapsed / 0.08)
+        frame = self._frames[i % len(self._frames)]
+        return self._Text(
+            f"  {frame}  {self.model}  thinking...  ({elapsed:.1f}s)",
+            style="grey63 italic",
+        )
+
+    def _update_loop(self):
+        while not self._stop.is_set():
+            self._live.update(self._render())
+            self._stop.wait(0.08)
 
 # Known subcommand names (kept in sync with @app.command definitions)
 _SUBCOMMANDS = {"review", "history", "show", "stats", "export", "classify-cmd", "clipboard-cmd"}
@@ -99,16 +144,22 @@ def _do_lookup(
     logger = get_logger("cli")
     logger.info("Lookup: query=%r no_ai=%s context=%s", query, no_ai, bool(context))
     try:
-        result = asyncio.run(do_lookup(
-            query=query,
-            config=config,
-            conn=conn,
-            context=context,
-            force=force,
-            no_save=no_save,
-            no_ai=no_ai,
-            is_identifier=is_identifier,
-        ))
+        from .lookup import lookup as do_lookup
+
+        use_llm = not no_ai and config.llm.enabled
+        if use_llm:
+            with ThinkingSpinner(config.llm.model):
+                result = asyncio.run(do_lookup(
+                    query=query, config=config, conn=conn,
+                    context=context, force=force, no_save=no_save,
+                    no_ai=no_ai, is_identifier=is_identifier,
+                ))
+        else:
+            result = asyncio.run(do_lookup(
+                query=query, config=config, conn=conn,
+                context=context, force=force, no_save=no_save,
+                no_ai=no_ai, is_identifier=is_identifier,
+            ))
     except CtxwordError as e:
         logger.error("Lookup failed: %s", e)
         console.print(f"[red]Error:[/red] {e}")
@@ -116,12 +167,15 @@ def _do_lookup(
 
     # Handle typo
     if result.get("_typo"):
+        from .render import render_typo_warning
         render_typo_warning(query, result["_suggestion"], result.get("_suggestions", []))
         raise typer.Exit(1)
 
     if json_output:
+        from .render import render_lookup_json
         render_lookup_json(result)
     else:
+        from .render import render_lookup
         render_lookup(result, full=full)
 
 
@@ -131,6 +185,9 @@ def review(
     tag: Optional[str] = typer.Option(None, "--tag", help="Filter by tag"),
 ):
     """Review due vocabulary cards."""
+    from .review import get_due_cards, rate_card
+    from .render import render_review_card, render_review_answer
+
     config = get_config()
     conn = get_db()
 
@@ -178,6 +235,9 @@ def history(
     limit: int = typer.Option(20, "--limit", "-n", help="Number of entries to show"),
 ):
     """Show recent lookup history."""
+    from .lookup import get_history
+    from .render import render_history
+
     conn = get_db()
     rows = get_history(conn, limit=limit)
 
@@ -194,6 +254,9 @@ def show(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Show saved details for a specific query."""
+    from .lookup import get_lookup_detail
+    from .render import render_lookup
+
     conn = get_db()
     detail = get_lookup_detail(conn, query)
 
@@ -225,6 +288,9 @@ def show(
 @app.command()
 def stats():
     """Show learning statistics."""
+    from .review import get_stats
+    from .render import render_stats
+
     conn = get_db()
     stats_data = get_stats(conn)
     render_stats(stats_data)
@@ -241,6 +307,8 @@ def export(
     if target != "anki":
         console.print(f"[red]Unknown export target: {target}. Currently only 'anki' is supported.[/red]")
         raise typer.Exit(1)
+
+    from .anki import export_tsv, export_csv
 
     conn = get_db()
 

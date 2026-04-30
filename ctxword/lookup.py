@@ -9,8 +9,6 @@ from . import language as lang_detect
 from . import spelling
 from . import morphology
 from . import dictionary
-from . import llm
-from . import review
 from .config import Config
 from .models import Lookup, Entry, now_iso
 from .errors import LookupError
@@ -90,6 +88,7 @@ async def lookup(
     should_use_llm = not no_ai and config.llm.enabled
 
     if should_use_llm:
+        from . import llm
         api_key = config.llm.api_key
         if api_key:
             prompt_version = llm._get_prompt_version(str(input_type))
@@ -158,6 +157,7 @@ async def lookup(
         entry_id = _save_entry(conn, lookup_id, result)
 
         # Generate cards
+        from . import review
         card_ids = review.generate_cards_from_response(conn, entry_id, result, config)
 
         result["saved"] = True
