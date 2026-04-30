@@ -120,7 +120,7 @@ async def _call_api(
             elif e.response.status_code == 405:
                 msg += "\n  Hint: this URL doesn't accept API requests — are you using the web UI address instead of the API endpoint?"
             elif e.response.status_code in (401, 403):
-                msg += f"\n  Hint: check that {config.llm.api_key_env} is set correctly."
+                msg += "\n  Hint: check that CTXWORD_OPENAI_KEY is set correctly."
             raise LLMError(msg)
         except httpx.ConnectError as e:
             raise LLMError(
@@ -265,7 +265,7 @@ async def explain(
 
     if api_key is None:
         raise LLMError(
-            f"API key not found. Set the {config.llm.api_key_env} environment variable."
+            "API key not found. Set the CTXWORD_OPENAI_KEY environment variable."
         )
 
     prompt_version = _get_prompt_version(input_type)

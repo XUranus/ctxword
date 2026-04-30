@@ -11,7 +11,7 @@ from . import morphology
 from . import dictionary
 from . import llm
 from . import review
-from .config import Config, get_api_key
+from .config import Config
 from .models import Lookup, Entry, now_iso
 from .errors import LookupError
 from .classify import InputType
@@ -85,7 +85,7 @@ async def lookup(
     should_use_llm = not no_ai and config.llm.enabled
 
     if should_use_llm:
-        api_key = get_api_key(config)
+        api_key = config.llm.api_key
         if api_key:
             prompt_version = llm._get_prompt_version(str(input_type))
 

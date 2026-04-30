@@ -30,22 +30,24 @@ pip install -e ".[dev]"
 
 ## Configuration
 
-Set your API key and model in `~/.config/ctxword/config.toml`:
-
-```toml
-[llm]
-base_url = "https://api.deepseek.com"
-api_key_env = "CTXWORD_API_KEY"
-model = "deepseek-v4-flash"
-```
-
-Then export your key:
+All settings are read from environment variables. No config file needed.
 
 ```bash
-export CTXWORD_API_KEY="sk-your-key-here"
+export CTXWORD_OPENAI_KEY="sk-your-key-here"
+export CTXWORD_OPENAI_BASE="https://api.deepseek.com"  # default: OpenAI
+export CTXWORD_MODEL="deepseek-v4-flash"                # default: gpt-3.5-turbo
 ```
 
-Without an API key, `t` falls back to the built-in local dictionary.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CTXWORD_OPENAI_KEY` | (none) | API key |
+| `CTXWORD_OPENAI_BASE` | `https://api.openai.com/v1` | API base URL |
+| `CTXWORD_MODEL` | `gpt-3.5-turbo` | Model name |
+| `CTXWORD_MAX_TOKENS` | `2048` | Max response tokens |
+| `CTXWORD_TEMPERATURE` | `0.2` | LLM temperature |
+| `CTXWORD_LLM_ENABLED` | `1` | Set to `0` to disable LLM |
+
+Without `CTXWORD_OPENAI_KEY`, `t` falls back to the built-in local dictionary.
 
 ## Quick start
 
