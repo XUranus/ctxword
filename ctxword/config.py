@@ -25,6 +25,10 @@ class LLMConfig:
     temperature: float = 0.2
     max_tokens: int = 2048
     cache: bool = True
+    # Backup model — used if primary fails all retries
+    backup_api_key: str = ""
+    backup_base_url: str = ""
+    backup_model: str = ""
 
 
 @dataclass
@@ -70,6 +74,9 @@ def load_config() -> Config:
             temperature=float(os.environ.get("CTXWORD_TEMPERATURE", "0.2")),
             max_tokens=int(os.environ.get("CTXWORD_MAX_TOKENS", "2048")),
             cache=os.environ.get("CTXWORD_CACHE", "1") not in ("0", "false", "no"),
+            backup_api_key=os.environ.get("CTXWORD_OPENAI_KEY_BACKUP", ""),
+            backup_base_url=os.environ.get("CTXWORD_OPENAI_BASE_BACKUP", ""),
+            backup_model=os.environ.get("CTXWORD_MODEL_BACKUP", ""),
         ),
         review=ReviewConfig(
             enabled=os.environ.get("CTXWORD_REVIEW_ENABLED", "1") not in ("0", "false", "no"),

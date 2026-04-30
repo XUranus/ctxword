@@ -6,6 +6,9 @@ from typing import Any
 
 from .config import Config
 from .models import ReviewCard, ReviewLog, now_iso
+from .logging_config import get_logger
+
+logger = get_logger("review")
 
 
 # SM-2 like simple scheduler
@@ -104,6 +107,7 @@ def generate_cards_from_response(conn: sqlite3.Connection, entry_id: int, respon
         card_id = _insert_card(conn, entry_id, card_data)
         card_ids.append(card_id)
 
+    logger.info("Generated %d cards for entry %d", len(card_ids), entry_id)
     return card_ids
 
 
@@ -218,6 +222,9 @@ def rate_card(
     )
 
     conn.commit()
+
+    logger.info("Card %d rated: %s state=%s→%s interval=%.1fd",
+                card_id, rating, old_state, new_state, new_interval)
 
     return {
         "card_id": card_id,

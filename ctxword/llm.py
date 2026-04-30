@@ -12,6 +12,9 @@ from pydantic import BaseModel, ValidationError
 from .config import Config
 from .errors import LLMError
 from .paths import get_llm_dir
+from .logging_config import get_logger
+
+logger = get_logger("llm")
 
 # Prompt versions for cache tracking
 PROMPT_VERSION_EXPLAIN_WORD = "explain_word_v1"
@@ -111,7 +114,9 @@ async def _call_api(
 ) -> tuple[str, bool]:
     """Make a single API call. Returns (content, was_truncated)."""
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-    query = payload.get("messages", [{}])[-1].get("content", "")[:40]
+    model = payload.get("model", "unknown")
+    logger.info("API call: model=%s url=%s max_tokens=%s",
+                model, url, payload.get("max_tokens"))
 
     # Audit: save request (with key masked)
     audit_payload = {**payload, "_masked_key": _mask_key(api_key)}
@@ -130,6 +135,7 @@ async def _call_api(
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
             detail = e.response.text[:500]
+            logger.error("HTTP %s from %s: %s", e.response.status_code, url, detail)
             msg = (
                 f"LLM API returned HTTP {e.response.status_code}\n"
                 f"  URL: {url}\n"
@@ -144,6 +150,7 @@ async def _call_api(
                 msg += "\n  Hint: check that CTXWORD_OPENAI_KEY is set correctly."
             raise LLMError(msg)
         except httpx.ConnectError as e:
+            logger.error("Connection refused: %s — %s", url, e)
             raise LLMError(
                 f"Cannot connect to LLM API — connection refused or unreachable.\n"
                 f"  URL: {url}\n"
@@ -151,6 +158,7 @@ async def _call_api(
                 f"  Detail: {e!r}"
             )
         except httpx.TimeoutException as e:
+            logger.error("Request timed out: %s — %s", url, e)
             raise LLMError(
                 f"LLM API request timed out after 30s.\n"
                 f"  URL: {url}\n"
@@ -158,6 +166,7 @@ async def _call_api(
                 f"  Detail: {e!r}"
             )
         except httpx.RequestError as e:
+            logger.error("Request failed: %s — %s (%s)", url, type(e).__name__, e)
             raise LLMError(
                 f"LLM API request failed.\n"
                 f"  URL: {url}\n"
@@ -272,41 +281,38 @@ def _parse_json_content(content: str) -> dict:
     )
 
 
-async def explain(
+def _has_backup(config: Config) -> bool:
+    """Check if a backup model is configured."""
+    return bool(
+        config.llm.backup_api_key
+        and config.llm.backup_base_url
+        and config.llm.backup_model
+    )
+
+
+async def _try_explain_with_model(
     query: str,
     input_type: str,
     config: Config,
-    context: str | None = None,
-    context_hash: str | None = None,
-    lemma: str | None = None,
-    api_key: str | None = None,
+    user_prompt: str,
+    api_key: str,
+    model: str,
+    base_url: str,
+    label: str,
 ) -> dict[str, Any]:
-    """Call the LLM to explain a word/phrase/identifier, with retry on truncation.
-
-    Returns a validated dict matching the LLMResponse schema.
-    """
-    if not config.llm.enabled:
-        raise LLMError("LLM is disabled in config. Use --ai to override.")
-
-    if api_key is None:
-        raise LLMError(
-            "API key not found. Set the CTXWORD_OPENAI_KEY environment variable."
-        )
-
-    prompt_version = _get_prompt_version(input_type)
-    user_prompt = _build_user_prompt(query, input_type, context, lemma)
-
-    url = f"{config.llm.base_url.rstrip('/')}/chat/completions"
+    """Inner retry loop for a single model. label is "primary" or "backup"."""
+    url = f"{base_url.rstrip('/')}/chat/completions"
     max_tokens = config.llm.max_tokens
 
     last_content = ""
     for attempt in range(3):
         if attempt > 0:
-            # Boost token limit on retry
             max_tokens = int(max_tokens * 1.5)
+            logger.info("Retry attempt %d/3 for %s model (max_tokens=%d)",
+                        attempt + 1, label, max_tokens)
 
         payload = {
-            "model": config.llm.model,
+            "model": model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
@@ -318,45 +324,117 @@ async def explain(
         content, was_truncated = await _call_api(url, api_key, payload, config)
         last_content = content
 
-        # Check finish_reason — if truncated by token limit, definitely retry
         if was_truncated and attempt < 2:
+            logger.warning("Response truncated (finish_reason=length), retrying (%s)",
+                           label)
             continue
 
-        # Try to parse
         try:
             parsed = _parse_json_content(content)
         except LLMError:
             if attempt < 2:
+                logger.warning("JSON parse failed on attempt %d, retrying (%s)",
+                               attempt + 1, label)
                 continue
             raise
 
-        # Validate against schema
         try:
             validated = LLMResponse.model_validate(parsed)
         except ValidationError as e:
             if attempt < 2:
+                logger.warning("Schema validation failed on attempt %d, retrying (%s): %s",
+                               attempt + 1, label, e)
                 continue
             raise LLMError(
-                f"LLM response missing required fields after {attempt + 1} attempts.\n"
+                f"LLM response missing required fields after {attempt + 1} attempts "
+                f"({label} model).\n"
                 f"  Validation error: {e}\n"
                 f"  Parsed: {json.dumps(parsed, ensure_ascii=False)[:300]}"
             )
 
         result = validated.model_dump()
-        # Backfill fields the LLM may have omitted
         if not result.get("query"):
             result["query"] = query
         if not result.get("normalized_query"):
             result["normalized_query"] = query.lower()
         if not result.get("input_type") or result["input_type"] == "unknown":
             result["input_type"] = input_type
+        logger.info("LLM response parsed successfully (%s model, attempt %d)",
+                     label, attempt + 1)
         return result
 
-    # Should not reach here (last attempt raises in _parse_json_content)
+    logger.error("%s model exhausted all retries", label)
     raise LLMError(
-        "Failed to get a valid LLM response after 3 attempts.\n"
+        f"Failed to get a valid LLM response from {label} model after 3 attempts.\n"
         f"  Last raw response (first 300 chars): {last_content[:300]}"
     )
+
+
+async def explain(
+    query: str,
+    input_type: str,
+    config: Config,
+    context: str | None = None,
+    context_hash: str | None = None,
+    lemma: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Call the LLM to explain a word/phrase/identifier, with retry on truncation.
+
+    Falls back to the backup model (if configured) when the primary fails.
+    Returns a validated dict matching the LLMResponse schema.
+    """
+    if not config.llm.enabled:
+        raise LLMError("LLM is disabled in config.")
+
+    if api_key is None:
+        raise LLMError(
+            "API key not found. Set the CTXWORD_OPENAI_KEY environment variable."
+        )
+
+    prompt_version = _get_prompt_version(input_type)
+    user_prompt = _build_user_prompt(query, input_type, context, lemma)
+
+    # Try primary model
+    primary_errors: list[str] = []
+    try:
+        return await _try_explain_with_model(
+            query=query,
+            input_type=input_type,
+            config=config,
+            user_prompt=user_prompt,
+            api_key=api_key,
+            model=config.llm.model,
+            base_url=config.llm.base_url,
+            label="primary",
+        )
+    except LLMError as e:
+        logger.warning("Primary model failed: %s", e)
+        primary_errors.append(str(e))
+
+    # Try backup model if primary failed
+    if _has_backup(config):
+        logger.info("Falling back to backup model: %s", config.llm.backup_model)
+        try:
+            return await _try_explain_with_model(
+                query=query,
+                input_type=input_type,
+                config=config,
+                user_prompt=user_prompt,
+                api_key=config.llm.backup_api_key,
+                model=config.llm.backup_model,
+                base_url=config.llm.backup_base_url,
+                label="backup",
+            )
+        except LLMError as e:
+            raise LLMError(
+                "All LLM models failed.\n"
+                f"  Primary error: {primary_errors[0] if primary_errors else 'unknown'}\n"
+                f"  Backup error: {e}"
+            )
+
+    # No backup configured — re-raise the primary error
+    raise LLMError(primary_errors[0] if primary_errors else "Unknown LLM error")
 
 
 def check_cache(
@@ -373,8 +451,10 @@ def check_cache(
     ).fetchone()
     if row:
         try:
+            logger.info("Cache hit for %r", query)
             return json.loads(row["response_json"])
         except json.JSONDecodeError:
+            logger.warning("Cache entry corrupt for %r", query)
             return None
     return None
 

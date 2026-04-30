@@ -2,9 +2,12 @@
 
 import asyncio
 import sys
+import traceback
 from typing import Optional
 
 import typer
+
+from .logging_config import init_logging, get_logger
 
 from . import classify as classify_mod
 from .config import load_config, Config
@@ -93,6 +96,8 @@ def _do_lookup(
     no_ai: bool = False,
     is_identifier: bool = False,
 ):
+    logger = get_logger("cli")
+    logger.info("Lookup: query=%r no_ai=%s context=%s", query, no_ai, bool(context))
     try:
         result = asyncio.run(do_lookup(
             query=query,
@@ -105,6 +110,7 @@ def _do_lookup(
             is_identifier=is_identifier,
         ))
     except CtxwordError as e:
+        logger.error("Lookup failed: %s", e)
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
 
@@ -326,13 +332,20 @@ def _parse_and_run(raw_args: list[str]) -> None:
 
 def main_entry():
     """Entry point for console scripts."""
+    init_logging()
+    logger = get_logger("cli")
     try:
         _parse_and_run(sys.argv)
     except KeyboardInterrupt:
         console.print("\n[dim]Interrupted.[/dim]")
         sys.exit(0)
     except CtxwordError as e:
+        logger.error("Command failed: %s", e)
         console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    except Exception:
+        logger.exception("Unhandled exception")
+        console.print("[red]An unexpected error occurred. Check the logs for details.[/red]")
         sys.exit(1)
 
 

@@ -15,6 +15,9 @@ from .config import Config
 from .models import Lookup, Entry, now_iso
 from .errors import LookupError
 from .classify import InputType
+from .logging_config import get_logger
+
+logger = get_logger("lookup")
 
 
 def _hash_context(context: str | None) -> str | None:
@@ -51,6 +54,8 @@ async def lookup(
     input_type = classify.classify(query)
     if is_identifier:
         input_type = InputType.CODE_IDENTIFIER
+
+    logger.info("Lookup start: query=%r type=%s no_ai=%s", query, input_type, no_ai)
 
     # Step 2: Language detection
     language = lang_detect.detect(query)
@@ -95,8 +100,10 @@ async def lookup(
                 if cached:
                     llm_response = cached
                     llm_used = False  # cached, not fresh call
+                    logger.info("Using cached LLM response for %r", query)
 
             if llm_response is None:
+                logger.info("Calling LLM for %r (model=%s)", query, config.llm.model)
                 llm_response = await llm.explain(
                     query=query,
                     input_type=str(input_type),
@@ -115,10 +122,13 @@ async def lookup(
     # Step 7: Build result from best available source
     if llm_response:
         result = {**llm_response, "_source": "llm"}
+        logger.info("Result source: llm for %r", query)
     elif dict_result:
         result = {**dict_result, "_source": "local_dict"}
+        logger.info("Result source: local_dict for %r", query)
     else:
         # Minimal result from morphology + guess
+        logger.info("Result source: morphology (fallback) for %r", query)
         result = {
             "query": query,
             "lemma": lemma,
@@ -143,6 +153,7 @@ async def lookup(
         if result.get("_source") == "llm" and not llm_used:
             status = "cached"
 
+        logger.info("Saving lookup: query=%r status=%s", query, status)
         lookup_id = _save_lookup(conn, query, input_type, language, context, context_hash, status)
         entry_id = _save_entry(conn, lookup_id, result)
 
