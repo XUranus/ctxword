@@ -2,6 +2,8 @@
 
 import json
 import hashlib
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -9,6 +11,7 @@ from pydantic import BaseModel, ValidationError
 
 from .config import Config
 from .errors import LLMError
+from .paths import get_llm_dir
 
 # Prompt versions for cache tracking
 PROMPT_VERSION_EXPLAIN_WORD = "explain_word_v1"
@@ -89,6 +92,17 @@ def _make_cache_key(query: str, context_hash: str | None, model: str, prompt_ver
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+def _audit_save(filename: str, data: dict) -> None:
+    """Save LLM request/response to audit directory."""
+    try:
+        dir_ = get_llm_dir()
+        dir_.mkdir(parents=True, exist_ok=True)
+        with open(dir_ / filename, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, default=str)
+    except Exception:
+        pass  # audit save failure must not break the main flow
+
+
 async def _call_api(
     url: str,
     api_key: str,
@@ -96,6 +110,13 @@ async def _call_api(
     config: Config,
 ) -> tuple[str, bool]:
     """Make a single API call. Returns (content, was_truncated)."""
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    query = payload.get("messages", [{}])[-1].get("content", "")[:40]
+
+    # Audit: save request (with key masked)
+    audit_payload = {**payload, "_masked_key": _mask_key(api_key)}
+    _audit_save(f"{ts}_request.json", audit_payload)
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             response = await client.post(
@@ -126,7 +147,7 @@ async def _call_api(
             raise LLMError(
                 f"Cannot connect to LLM API — connection refused or unreachable.\n"
                 f"  URL: {url}\n"
-                f"  Check that base_url is correct in ~/.config/ctxword/config.toml\n"
+                f"  Check that CTXWORD_OPENAI_BASE is correct.\n"
                 f"  Detail: {e!r}"
             )
         except httpx.TimeoutException as e:
@@ -148,6 +169,10 @@ async def _call_api(
     data = response.json()
     content = data["choices"][0]["message"]["content"]
     finish_reason = data["choices"][0].get("finish_reason", "stop")
+
+    # Audit: save response
+    _audit_save(f"{ts}_response.json", data)
+
     return content, finish_reason == "length"
 
 

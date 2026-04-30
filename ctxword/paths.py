@@ -2,34 +2,28 @@ import os
 from pathlib import Path
 
 
-def _expand(path: str) -> Path:
-    return Path(os.path.expanduser(path)).resolve()
+def _root() -> Path:
+    base = os.environ.get("CTXWORD_DATA", "~/.local/share/ctxword")
+    return Path(os.path.expanduser(base)).resolve()
 
 
 def get_data_dir() -> Path:
-    base = os.environ.get("CTXWORD_DATA_DIR", "~/.local/share/ctxword")
-    return _expand(base)
+    return _root()
 
 
-def get_config_dir() -> Path:
-    base = os.environ.get("CTXWORD_CONFIG_DIR", "~/.config/ctxword")
-    return _expand(base)
+def get_logs_dir() -> Path:
+    return _root() / "logs"
 
 
-def get_cache_dir() -> Path:
-    base = os.environ.get("CTXWORD_CACHE_DIR", "~/.cache/ctxword")
-    return _expand(base)
+def get_llm_dir() -> Path:
+    return _root() / "llm"
 
 
 def get_database_path() -> Path:
-    return get_data_dir() / "ctxword.db"
-
-
-def get_config_path() -> Path:
-    return get_config_dir() / "config.toml"
+    return _root() / "ctxword.db"
 
 
 def ensure_dirs() -> None:
-    get_data_dir().mkdir(parents=True, exist_ok=True)
-    get_config_dir().mkdir(parents=True, exist_ok=True)
-    get_cache_dir().mkdir(parents=True, exist_ok=True)
+    _root().mkdir(parents=True, exist_ok=True)
+    get_logs_dir().mkdir(parents=True, exist_ok=True)
+    get_llm_dir().mkdir(parents=True, exist_ok=True)
