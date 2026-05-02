@@ -92,3 +92,33 @@ t export anki -o cards.tsv
 | `t show QUERY` | Show saved details |
 | `t stats` | Show learning statistics |
 | `t export anki` | Export cards for Anki |
+
+## Shell tab completion
+
+`t` can autocomplete words as you type using a built-in ~2500-word English dictionary.
+
+```bash
+# One-time setup
+t completion
+
+# Then add to your shell config:
+# bash (~/.bashrc):
+source ~/.local/share/ctxword/completion.bash
+
+# zsh (~/.zshrc):
+source ~/.local/share/ctxword/completion.zsh
+```
+
+Restart your shell, then type `t sup<TAB>` to see completions like `super`, `supply`, `support`.
+
+For a larger word list, install your system's dictionary:
+
+```bash
+# Arch
+sudo pacman -S words
+
+# Debian/Ubuntu
+sudo apt install wamerican
+```
+
+The next `t completion` will include the system dictionary words (~100k+).

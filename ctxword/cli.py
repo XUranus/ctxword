@@ -73,7 +73,7 @@ class ThinkingSpinner:
             self._stop.wait(0.08)
 
 # Known subcommand names (kept in sync with @app.command definitions)
-_SUBCOMMANDS = {"review", "history", "show", "stats", "export", "classify-cmd", "clipboard-cmd"}
+_SUBCOMMANDS = {"review", "history", "show", "stats", "export", "classify-cmd", "clipboard-cmd", "_complete", "completion"}
 
 app = typer.Typer(
     name="t",
@@ -349,6 +349,83 @@ def clipboard_cmd():
     except CtxwordError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
+
+
+@app.command(name="_complete", hidden=True)
+def autocomplete(
+    prefix: str = typer.Argument(..., help="Word prefix to complete"),
+):
+    """Return possible completions for shell tab completion (one per line)."""
+    from .autocomplete import complete as complete_words
+    results = complete_words(prefix, limit=50)
+    for word in results:
+        print(word)
+
+
+@app.command(name="completion", hidden=True)
+def completion_init():
+    """Build the autocomplete word cache and write shell completion scripts."""
+    from .autocomplete import build_cache
+    from .paths import get_data_dir
+
+    count = build_cache()
+    data_dir = get_data_dir()
+
+    # Write completion scripts
+    bash_script = _build_bash_completion(data_dir)
+    zsh_script = _build_zsh_completion(data_dir)
+
+    bash_path = data_dir / "completion.bash"
+    zsh_path = data_dir / "completion.zsh"
+    bash_path.write_text(bash_script)
+    zsh_path.write_text(zsh_script)
+
+    console.print(f"[green]Completion cache built with {count} words.[/green]")
+    console.print()
+    console.print("[bold]To enable tab completion, add this line to your shell config:[/bold]")
+    console.print()
+    console.print("[dim]# bash (~/.bashrc):[/dim]")
+    console.print(f"  source {bash_path}")
+    console.print()
+    console.print("[dim]# zsh (~/.zshrc):[/dim]")
+    console.print(f"  source {zsh_path}")
+
+
+def _build_bash_completion(data_dir) -> str:
+    cache = data_dir / "completions.txt"
+    return f'''# ctxword tab completion for bash
+_t_complete() {{
+    local cur="${{COMP_WORDS[COMP_CWORD]}}"
+    [[ "$cur" == -* ]] && return
+
+    local cache="{cache}"
+    [[ -f "$cache" ]] || return
+
+    local escaped
+    escaped=$(sed 's/[.[\\*^$()+?{{|]/\\\\&/g' <<< "$cur" 2>/dev/null || echo "$cur")
+    local matches
+    matches=$(grep -i "^$escaped" "$cache" 2>/dev/null | head -50 | tr "\\n" " ")
+    COMPREPLY=($matches)
+}}
+complete -F _t_complete t ctxword'''
+
+
+def _build_zsh_completion(data_dir) -> str:
+    cache = data_dir / "completions.txt"
+    return f'''# ctxword tab completion for zsh
+_t_complete() {{
+    local cache="{cache}"
+    [[ -f "$cache" ]] || return
+
+    local cur="${{words[CURRENT]}}"
+    [[ "$cur" == -* ]] && return
+
+    local escaped
+    escaped=$(sed 's/[.[\\*^$()+?{{|]/\\\\&/g' <<< "$cur" 2>/dev/null || echo "$cur")
+    local matches=(${{(f)"$(grep -i "^$escaped" "$cache" 2>/dev/null | head -50)"}})
+    [[ ${{#matches}} -gt 0 ]] && compadd -- "${{matches[@]}}"
+}}
+compdef _t_complete t ctxword'''
 
 
 def _parse_and_run(raw_args: list[str]) -> None:
